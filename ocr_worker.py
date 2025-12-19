@@ -1,184 +1,90 @@
 """
-OCR worker for Invoice Automation MVP (Google Cloud Vision).
-Scalable multi-user version:
-WhatsApp sender → User Registry Sheet → User-specific Google Sheet.
+OCR worker for Invoice Automation MVP
+
+Responsibility:
+- Take ONE image path
+- Run Google Vision OCR
+- Parse invoice fields
+- Save OCR + parsed JSON
+- RETURN parsed data to webhook
 """
 
 import os
 import json
 import logging
-import io
-import time
 from pathlib import Path
 
-from pdf2image import convert_from_path
 from google.cloud import vision
+from google.oauth2 import service_account
 
-from sheets import append_invoice_row
-from user_registry import get_sheet_id_for_user
+from parser import extract_fields
 
-# -------------------------------------------------
-# LOGGING
-# -------------------------------------------------
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logging.basicConfig(level=logging.INFO)
 
-# -------------------------------------------------
+# ============================================================
+# DIRECTORIES
+# ============================================================
+
+OCR_DIR = Path("data/ocr")
+PARSED_DIR = Path("data/parsed")
+
+OCR_DIR.mkdir(parents=True, exist_ok=True)
+PARSED_DIR.mkdir(parents=True, exist_ok=True)
+
+# ============================================================
 # GOOGLE VISION CLIENT
-# -------------------------------------------------
+# ============================================================
+
 def get_vision_client():
     creds_raw = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON")
     if not creds_raw:
-        raise RuntimeError("GOOGLE_APPLICATION_CREDENTIALS_JSON missing")
+        raise RuntimeError("Missing GOOGLE_APPLICATION_CREDENTIALS_JSON")
 
     creds_info = json.loads(creds_raw)
-    logging.info("🔥 USING VISION PROJECT ID: %s", creds_info.get("project_id"))
+    credentials = service_account.Credentials.from_service_account_info(creds_info)
+    return vision.ImageAnnotatorClient(credentials=credentials)
 
-    return vision.ImageAnnotatorClient.from_service_account_info(creds_info)
+# ============================================================
+# MAIN FUNCTION (USED BY WEBHOOK ONLY)
+# ============================================================
 
-# -------------------------------------------------
-# OPTIONAL PARSER
-# -------------------------------------------------
-try:
-    from parser import extract_fields
-except Exception:
-    extract_fields = None
+def process_file(image_path: Path) -> dict:
+    if not image_path.exists():
+        raise FileNotFoundError(image_path)
 
-# -------------------------------------------------
-# PATHS
-# -------------------------------------------------
-BASE_DIR = Path(__file__).resolve().parent
-MEDIA_DIR = BASE_DIR / "data" / "media"
-OCR_DIR = BASE_DIR / "data" / "ocr"
-PARSED_DIR = BASE_DIR / "data" / "parsed"
-PROCESSED_MEDIA_DIR = MEDIA_DIR / "processed"
+    logging.info("OCR: Processing %s", image_path.name)
 
-IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
-PDF_EXTS = {".pdf"}
-
-for d in [MEDIA_DIR, OCR_DIR, PARSED_DIR, PROCESSED_MEDIA_DIR]:
-    d.mkdir(parents=True, exist_ok=True)
-
-# -------------------------------------------------
-# HELPERS
-# -------------------------------------------------
-def is_processed(path: Path) -> bool:
-    return (OCR_DIR / f"{path.stem}.txt").exists()
-
-def write_text(path: Path, text: str):
-    out = OCR_DIR / f"{path.stem}.txt"
-    out.write_text(text, encoding="utf-8")
-    logging.info("Wrote OCR -> %s", out)
-
-def write_parsed(path: Path, data: dict):
-    out = PARSED_DIR / f"{path.stem}.json"
-    out.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    logging.info("Wrote parsed JSON -> %s", out)
-
-def move_processed(path: Path):
-    dest = PROCESSED_MEDIA_DIR / path.name
-    path.rename(dest)
-    logging.info("Moved processed media -> %s", dest)
-
-def normalize_money(x):
-    if not x:
-        return ""
-    try:
-        return f"{float(str(x).replace(',', '').replace('₹', '')):.2f}"
-    except Exception:
-        return str(x)
-
-# -------------------------------------------------
-# OCR FUNCTIONS
-# -------------------------------------------------
-def ocr_image(path: Path) -> str:
     client = get_vision_client()
-    image = vision.Image(content=path.read_bytes())
+    image = vision.Image(content=image_path.read_bytes())
     response = client.text_detection(image=image)
 
     if response.error.message:
-        logging.error("Vision error: %s", response.error.message)
-        return ""
+        raise RuntimeError(response.error.message)
 
-    return response.text_annotations[0].description if response.text_annotations else ""
+    if not response.text_annotations:
+        raise RuntimeError("No OCR text detected")
 
-def ocr_pdf(path: Path) -> str:
-    client = get_vision_client()
-    text_blocks = []
+    raw_text = response.text_annotations[0].description
 
-    pages = convert_from_path(str(path), dpi=200)
-    for page in pages:
-        buf = io.BytesIO()
-        page.save(buf, format="JPEG")
-        image = vision.Image(content=buf.getvalue())
-        response = client.text_detection(image=image)
+    # Save OCR
+    ocr_path = OCR_DIR / f"{image_path.stem}.txt"
+    ocr_path.write_text(raw_text, encoding="utf-8")
+    logging.info("Wrote OCR -> %s", ocr_path)
 
-        if response.text_annotations:
-            text_blocks.append(response.text_annotations[0].description)
-
-    return "\n".join(text_blocks)
-
-# -------------------------------------------------
-# MAIN PIPELINE
-# -------------------------------------------------
-def process_file(path: Path, from_number: str):
-    if is_processed(path):
-        logging.info("Already processed %s", path.name)
-        return
-
-    logging.info("Processing %s (from %s)", path.name, from_number)
-
-    if path.suffix.lower() in IMAGE_EXTS:
-        text = ocr_image(path)
-    elif path.suffix.lower() in PDF_EXTS:
-        text = ocr_pdf(path)
-    else:
-        logging.warning("Unsupported file %s", path.name)
-        return
-
-    write_text(path, text)
-
-    parsed = {
-        "file": path.name,
-        "raw_text": text,
-        "from_number": from_number,
+    # Parse
+    parsed = extract_fields(raw_text)
+    parsed["_meta"] = {
+        "source_image": image_path.name,
+        "ocr_file": ocr_path.name,
     }
+    parsed["raw_text"] = raw_text
 
-    if extract_fields:
-        try:
-            fields = extract_fields(text)
-            parsed.update({
-                "invoice_number": fields.get("invoice_number"),
-                "date": fields.get("date"),
-                "supplier": fields.get("supplier"),
-                "total": normalize_money(fields.get("total")),
-            })
-        except Exception:
-            logging.exception("Parser failed")
+    # Save parsed JSON
+    parsed_path = PARSED_DIR / f"{image_path.stem}.json"
+    parsed_path.write_text(
+        json.dumps(parsed, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    logging.info("Wrote parsed JSON -> %s", parsed_path)
 
-    write_parsed(path, parsed)
-
-    # -------------------------------------------------
-    # DYNAMIC SHEET ROUTING (THOUSANDS OF USERS)
-    # -------------------------------------------------
-    sheet_id = get_sheet_id_for_user(from_number)
-
-    if not sheet_id:
-        logging.warning("❌ User %s not registered — skipping Sheets append", from_number)
-    else:
-        try:
-            logging.info("📤 Appending invoice for %s to sheet %s", from_number, sheet_id)
-            append_invoice_row(parsed, sheet_id)
-            logging.info("✅ Sheets append SUCCESS")
-        except Exception:
-            logging.exception("❌ Sheets append FAILED")
-
-    move_processed(path)
-
-# -------------------------------------------------
-# ENTRY POINT (CALLED FROM WEBHOOK)
-# -------------------------------------------------
-def run_ocr_for_sender(from_number: str):
-    for f in MEDIA_DIR.glob("*"):
-        if f.is_file():
-            process_file(f, from_number)
-            time.sleep(0.1)
+    return parsed
