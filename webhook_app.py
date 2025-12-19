@@ -1,4 +1,5 @@
 print("🔥🔥🔥 NEW WEBHOOK VERSION LOADED 🔥🔥🔥")
+
 import os
 import time
 import logging
@@ -16,7 +17,10 @@ from sheets import append_invoice_row
 # LOGGING
 # ============================================================
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s"
+)
 
 # ============================================================
 # ENV VARS (Render safe)
@@ -46,12 +50,12 @@ MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 # ============================================================
 
 def download_media(media_url: str, dest: Path):
-    logging.info("⬇️ Downloading media")
+    logging.info("⬇️ Downloading media from Twilio")
     r = requests.get(
         media_url,
         auth=(TWILIO_SID, TWILIO_TOKEN),
         stream=True,
-        timeout=30
+        timeout=30,
     )
     r.raise_for_status()
     with open(dest, "wb") as f:
@@ -71,15 +75,24 @@ def home():
 @app.route("/webhook/whatsapp", methods=["POST"])
 def whatsapp_webhook():
     """
-    MAIN WhatsApp webhook
+    FINAL WhatsApp webhook (production-safe)
     """
 
     try:
-        # -----------------------------
-        # 1️⃣ Identify customer
-        # -----------------------------
+        # ----------------------------------------------------
+        # 1️⃣ IGNORE non-media callbacks (Twilio sends many)
+        # ----------------------------------------------------
+        media_url = request.form.get("MediaUrl0")
+        if not media_url:
+            logging.info("ℹ️ No MediaUrl0 — ignoring this callback")
+            return jsonify({"status": "ignored"}), 200
+
+        # ----------------------------------------------------
+        # 2️⃣ Identify customer
+        # ----------------------------------------------------
         from_number = request.form.get("From")
         if not from_number:
+            logging.error("Missing From number")
             return jsonify({"error": "Missing From"}), 400
 
         customer_id = normalize_whatsapp(from_number)
@@ -88,38 +101,33 @@ def whatsapp_webhook():
         sheet_id = get_sheet_for_customer(customer_id)
         logging.info("📄 Sheet resolved: %s", sheet_id)
 
-        # -----------------------------
-        # 2️⃣ Media check
-        # -----------------------------
-        num_media = int(request.form.get("NumMedia", "0"))
-        if num_media == 0:
-            logging.info("No media sent")
-            return jsonify({"status": "no_media"}), 200
-
-        media_url = request.form.get("MediaUrl0")
-        if not media_url:
-            return jsonify({"error": "Missing MediaUrl0"}), 400
-
+        # ----------------------------------------------------
+        # 3️⃣ Prepare file path
+        # ----------------------------------------------------
         message_id = request.form.get("MessageSid", str(int(time.time())))
         img_path = MEDIA_DIR / f"{message_id}.jpg"
 
-        # -----------------------------
-        # 3️⃣ Download invoice
-        # -----------------------------
+        # ----------------------------------------------------
+        # 4️⃣ Download invoice image
+        # ----------------------------------------------------
         download_media(media_url, img_path)
 
-        # -----------------------------
-        # 4️⃣ OCR + Parse
-        # -----------------------------
+        # ----------------------------------------------------
+        # 5️⃣ OCR + Parse
+        # ----------------------------------------------------
         parsed_data = process_file(img_path)
-        logging.info("🧪 Parsed data keys: %s", list(parsed_data.keys()))
 
-        # -----------------------------
-        # 5️⃣ Append to Google Sheets
-        # -----------------------------
+        logging.info(
+            "🧪 Parsed keys: %s",
+            list(parsed_data.keys()) if isinstance(parsed_data, dict) else "INVALID"
+        )
+
+        # ----------------------------------------------------
+        # 6️⃣ Append to Google Sheets (CRITICAL)
+        # ----------------------------------------------------
         append_invoice_row(parsed_data, sheet_id)
 
-        logging.info("✅ Invoice stored successfully")
+        logging.info("✅ Invoice processed & stored successfully")
 
         return jsonify({"status": "ok"}), 200
 
@@ -129,8 +137,9 @@ def whatsapp_webhook():
 
 
 # ============================================================
-# LOCAL DEV ONLY
+# LOCAL DEV
 # ============================================================
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
+
