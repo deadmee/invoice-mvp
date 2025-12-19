@@ -1,4 +1,4 @@
-print("🔥🔥🔥 NEW WEBHOOK VERSION LOADED 🔥🔥🔥")
+print("🔥🔥🔥 FINAL WEBHOOK VERSION LOADED 🔥🔥🔥")
 
 import os
 import time
@@ -50,18 +50,32 @@ MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 # ============================================================
 
 def download_media(media_url: str, dest: Path):
+    """
+    Correct Twilio WhatsApp media downloader.
+    Handles redirects properly (FIXES 404 issue).
+    """
     logging.info("⬇️ Downloading media from Twilio")
+
     r = requests.get(
         media_url,
         auth=(TWILIO_SID, TWILIO_TOKEN),
         stream=True,
         timeout=30,
+        allow_redirects=True,  # 🔥 CRITICAL FIX
     )
-    r.raise_for_status()
+
+    if r.status_code != 200:
+        raise RuntimeError(
+            f"Twilio media download failed. "
+            f"Status={r.status_code}, URL={media_url}"
+        )
+
     with open(dest, "wb") as f:
         for chunk in r.iter_content(1024 * 16):
             if chunk:
                 f.write(chunk)
+
+    logging.info("📥 Media downloaded to %s", dest)
 
 # ============================================================
 # ROUTES
@@ -80,11 +94,11 @@ def whatsapp_webhook():
 
     try:
         # ----------------------------------------------------
-        # 1️⃣ IGNORE non-media callbacks (Twilio sends many)
+        # 1️⃣ Ignore non-media callbacks (Twilio sends many)
         # ----------------------------------------------------
         media_url = request.form.get("MediaUrl0")
         if not media_url:
-            logging.info("ℹ️ No MediaUrl0 — ignoring this callback")
+            logging.info("ℹ️ No MediaUrl0 — ignoring callback")
             return jsonify({"status": "ignored"}), 200
 
         # ----------------------------------------------------
@@ -92,7 +106,6 @@ def whatsapp_webhook():
         # ----------------------------------------------------
         from_number = request.form.get("From")
         if not from_number:
-            logging.error("Missing From number")
             return jsonify({"error": "Missing From"}), 400
 
         customer_id = normalize_whatsapp(from_number)
@@ -108,7 +121,7 @@ def whatsapp_webhook():
         img_path = MEDIA_DIR / f"{message_id}.jpg"
 
         # ----------------------------------------------------
-        # 4️⃣ Download invoice image
+        # 4️⃣ Download invoice image (FIXED)
         # ----------------------------------------------------
         download_media(media_url, img_path)
 
@@ -123,7 +136,7 @@ def whatsapp_webhook():
         )
 
         # ----------------------------------------------------
-        # 6️⃣ Append to Google Sheets (CRITICAL)
+        # 6️⃣ Append to Google Sheets
         # ----------------------------------------------------
         append_invoice_row(parsed_data, sheet_id)
 
@@ -142,4 +155,3 @@ def whatsapp_webhook():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
-
