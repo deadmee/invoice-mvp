@@ -1,11 +1,10 @@
-print("🔥🔥🔥 FINAL WEBHOOK VERSION LOADED 🔥🔥🔥")
+print("🔥🔥🔥 WEBHOOK vFINAL — MEDIAURL0 ONLY 🔥🔥🔥")
 
 import os
 import time
 import logging
 import requests
 from pathlib import Path
-
 from flask import Flask, request, jsonify
 
 from utils.customers import normalize_whatsapp
@@ -23,14 +22,14 @@ logging.basicConfig(
 )
 
 # ============================================================
-# ENV VARS (Render safe)
+# ENV
 # ============================================================
 
 TWILIO_SID = os.getenv("TWILIO_ACCOUNT_SID")
 TWILIO_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
 
 if not TWILIO_SID or not TWILIO_TOKEN:
-    raise RuntimeError("Missing Twilio credentials")
+    raise RuntimeError("Twilio credentials missing")
 
 # ============================================================
 # APP
@@ -38,44 +37,48 @@ if not TWILIO_SID or not TWILIO_TOKEN:
 
 app = Flask(__name__)
 
-# ============================================================
-# DIRECTORIES
-# ============================================================
-
 MEDIA_DIR = Path("data/media")
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 
 # ============================================================
-# HELPERS
+# TWILIO MEDIA DOWNLOAD (LOCKED)
 # ============================================================
 
 def download_media(media_url: str, dest: Path):
     """
-    Correct Twilio WhatsApp media downloader.
-    Handles redirects properly (FIXES 404 issue).
+    Download WhatsApp media using MediaUrl0 EXACTLY.
+    NO MessageSid
+    NO MediaSid
+    NO URL reconstruction
     """
-    logging.info("⬇️ Downloading media from Twilio")
+
+    if not media_url:
+        raise RuntimeError("MediaUrl0 is missing")
+
+    if "/Messages/" in media_url or "/Media/" in media_url and "MediaUrl0" not in media_url:
+        raise RuntimeError(f"INVALID MEDIA URL RECEIVED: {media_url}")
+
+    logging.error("📎 USING MediaUrl0 = %s", media_url)
 
     r = requests.get(
         media_url,
         auth=(TWILIO_SID, TWILIO_TOKEN),
         stream=True,
         timeout=30,
-        allow_redirects=True,  # 🔥 CRITICAL FIX
     )
 
     if r.status_code != 200:
         raise RuntimeError(
-            f"Twilio media download failed. "
-            f"Status={r.status_code}, URL={media_url}"
+            f"Twilio media download failed "
+            f"(status={r.status_code}) URL={media_url}"
         )
 
     with open(dest, "wb") as f:
-        for chunk in r.iter_content(1024 * 16):
+        for chunk in r.iter_content(16384):
             if chunk:
                 f.write(chunk)
 
-    logging.info("📥 Media downloaded to %s", dest)
+    logging.info("📥 Media saved to %s", dest)
 
 # ============================================================
 # ROUTES
@@ -83,75 +86,60 @@ def download_media(media_url: str, dest: Path):
 
 @app.route("/", methods=["GET"])
 def home():
-    return "Webhook running", 200
+    return "OK", 200
 
 
 @app.route("/webhook/whatsapp", methods=["POST"])
 def whatsapp_webhook():
-    """
-    FINAL WhatsApp webhook (production-safe)
-    """
-
     try:
         # ----------------------------------------------------
-        # 1️⃣ Ignore non-media callbacks (Twilio sends many)
+        # 1️⃣ IGNORE NON-MEDIA CALLBACKS
         # ----------------------------------------------------
         media_url = request.form.get("MediaUrl0")
         if not media_url:
-            logging.info("ℹ️ No MediaUrl0 — ignoring callback")
+            logging.info("Ignoring callback without MediaUrl0")
             return jsonify({"status": "ignored"}), 200
 
         # ----------------------------------------------------
-        # 2️⃣ Identify customer
+        # 2️⃣ CUSTOMER
         # ----------------------------------------------------
         from_number = request.form.get("From")
-        if not from_number:
-            return jsonify({"error": "Missing From"}), 400
-
         customer_id = normalize_whatsapp(from_number)
-        logging.info("🧭 Customer identified: %s", customer_id)
+
+        logging.info("🧭 Customer: %s", customer_id)
 
         sheet_id = get_sheet_for_customer(customer_id)
-        logging.info("📄 Sheet resolved: %s", sheet_id)
+        logging.info("📄 Sheet ID: %s", sheet_id)
 
         # ----------------------------------------------------
-        # 3️⃣ Prepare file path
+        # 3️⃣ FILE PATH
         # ----------------------------------------------------
-        message_id = request.form.get("MessageSid", str(int(time.time())))
-        img_path = MEDIA_DIR / f"{message_id}.jpg"
+        msg_id = request.form.get("MessageSid", str(int(time.time())))
+        img_path = MEDIA_DIR / f"{msg_id}.jpg"
 
         # ----------------------------------------------------
-        # 4️⃣ Download invoice image (FIXED)
+        # 4️⃣ DOWNLOAD MEDIA (ONLY MediaUrl0)
         # ----------------------------------------------------
         download_media(media_url, img_path)
 
         # ----------------------------------------------------
-        # 5️⃣ OCR + Parse
+        # 5️⃣ OCR
         # ----------------------------------------------------
         parsed_data = process_file(img_path)
-
-        logging.info(
-            "🧪 Parsed keys: %s",
-            list(parsed_data.keys()) if isinstance(parsed_data, dict) else "INVALID"
-        )
+        logging.error("🚨 AFTER OCR — ABOUT TO APPEND 🚨")
 
         # ----------------------------------------------------
-        # 6️⃣ Append to Google Sheets
+        # 6️⃣ GOOGLE SHEETS
         # ----------------------------------------------------
         append_invoice_row(parsed_data, sheet_id)
-
-        logging.info("✅ Invoice processed & stored successfully")
+        logging.info("✅ SHEETS APPEND SUCCESS")
 
         return jsonify({"status": "ok"}), 200
 
     except Exception as e:
-        logging.exception("❌ Webhook failed")
-        return jsonify({"status": "error", "error": str(e)}), 500
+        logging.exception("❌ WEBHOOK FAILED")
+        return jsonify({"error": str(e)}), 500
 
-
-# ============================================================
-# LOCAL DEV
-# ============================================================
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
