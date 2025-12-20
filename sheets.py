@@ -2,13 +2,20 @@ import os
 import json
 import logging
 import random
-import re
 import time
+from typing import Dict
 
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+# ============================================================
+# LOGGING
+# ============================================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s"
+)
 
 # ============================================================
 # GOOGLE SHEETS CONFIG (RENDER SAFE)
@@ -18,20 +25,17 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 CREDS_RAW = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON")
 if not CREDS_RAW:
-    raise RuntimeError(
-        "GOOGLE_APPLICATION_CREDENTIALS_JSON is missing. "
-        "Paste FULL service account JSON in Render env vars."
-    )
+    raise RuntimeError("❌ GOOGLE_APPLICATION_CREDENTIALS_JSON missing")
 
 try:
     CREDS_INFO = json.loads(CREDS_RAW)
 except Exception as e:
-    raise RuntimeError("Invalid JSON in GOOGLE_APPLICATION_CREDENTIALS_JSON") from e
+    raise RuntimeError("❌ Invalid GOOGLE_APPLICATION_CREDENTIALS_JSON") from e
 
 DEFAULT_RANGE = os.getenv("SHEET_RANGE", "Sheet1!A:F")
 
 # ============================================================
-# GOOGLE SHEETS SERVICE (SINGLETON)
+# SINGLETON SHEETS SERVICE
 # ============================================================
 
 _SHEETS_SERVICE = None
@@ -39,6 +43,7 @@ _SHEETS_SERVICE = None
 def _get_service():
     global _SHEETS_SERVICE
     if _SHEETS_SERVICE is None:
+        logging.error("🧠 Initializing Google Sheets service")
         creds = Credentials.from_service_account_info(
             CREDS_INFO, scopes=SCOPES
         )
@@ -57,7 +62,7 @@ def _get_service():
 def _normalize_total(val):
     if val is None:
         return ""
-    s = str(val).strip()
+    s = str(val)
     s = s.replace(",", "").replace("₹", "").replace("Rs.", "").replace("Rs", "").strip()
     try:
         return f"{float(s):.2f}"
@@ -65,29 +70,30 @@ def _normalize_total(val):
         return s
 
 # ============================================================
-# MAIN APPEND FUNCTION (FORCE APPEND)
+# MAIN APPEND FUNCTION
 # ============================================================
 
 def append_invoice_row(
-    parsed: dict,
+    parsed: Dict,
     sheet_id: str,
     retry: int = 3,
     sheet_range: str = None,
 ) -> bool:
     """
-    Force append invoice data to a CUSTOMER-SPECIFIC Google Sheet.
-    No dedupe. No silent skipping.
+    FORCE append invoice data to Google Sheets.
+    NO dedupe. NO silent skipping.
     """
 
-    if not sheet_id:
-        raise ValueError("sheet_id is required")
+    # 🔥🔥🔥 PROOF OF LIFE 🔥🔥🔥
+    logging.error("📤 ENTERED append_invoice_row()")
+    logging.error("📄 TARGET SHEET ID = %s", sheet_id)
 
-    logging.info("📤 Google Sheets append STARTED")
+    if not sheet_id:
+        raise ValueError("❌ sheet_id is EMPTY")
 
     svc = _get_service()
     use_range = sheet_range or DEFAULT_RANGE
 
-    # Build row
     invoice_no = str(parsed.get("invoice_number") or "").strip()
     date = parsed.get("date") or ""
     vendor = (
@@ -108,10 +114,15 @@ def append_invoice_row(
     row = [invoice_no, date, vendor, total, currency, raw_snip]
     body = {"values": [row]}
 
+    logging.error("📦 ROW DATA = %s", row)
+    logging.error("📐 RANGE = %s", use_range)
+
     attempt = 0
     while True:
         attempt += 1
         try:
+            logging.error("🚀 Attempt %d → Sheets append()", attempt)
+
             svc.spreadsheets().values().append(
                 spreadsheetId=sheet_id,
                 range=use_range,
@@ -120,15 +131,15 @@ def append_invoice_row(
                 body=body,
             ).execute()
 
-            logging.info(
-                "✅ Google Sheets append SUCCESS (invoice=%s, sheet=%s)",
+            logging.error(
+                "✅ SHEETS APPEND SUCCESS | invoice=%s | sheet=%s",
                 invoice_no,
                 sheet_id
             )
             return True
 
-        except Exception:
-            logging.exception("❌ Sheets append failed (attempt %d)", attempt)
+        except Exception as e:
+            logging.exception("❌ SHEETS APPEND FAILED (attempt %d)", attempt)
             if attempt >= retry:
                 raise
             time.sleep((2 ** attempt) + random.random())
