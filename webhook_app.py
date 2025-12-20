@@ -12,11 +12,11 @@ from utils.customers import normalize_whatsapp
 from utils.customer_router import get_sheet_for_customer
 from ocr_worker import process_file
 import sys
-import sheets
+import sheets_runtime
 
-print("🔥 USING sheets.py FROM:", sheets.__file__, file=sys.stderr)
+print("🔥 USING sheets.py FROM:", sheets_runtime.__file__, file=sys.stderr)
 
-append_invoice_row = sheets.append_invoice_row
+append_invoice_row = sheets_runtime.append_invoice_row
 
 
 logging.basicConfig(

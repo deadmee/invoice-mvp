@@ -15,7 +15,7 @@ import random
 from pathlib import Path
 
 # import your sheets helper
-from sheets import append_invoice_row, mark_appended  # mark_appended used for local guard
+from sheets_runtime import append_invoice_row, mark_appended  # mark_appended used for local guard
 # if mark_appended isn't exported, we fallback to simple rename of guard folder
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
