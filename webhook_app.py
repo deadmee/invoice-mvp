@@ -92,6 +92,7 @@ def whatsapp_webhook():
         img_path = MEDIA_DIR / f"{msg_id}.jpg"
 
         ok = download_media(media_url, img_path)
+
         if not ok:
             return jsonify({"status": "media_not_ready"}), 200
 
