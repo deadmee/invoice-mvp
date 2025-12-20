@@ -42,22 +42,21 @@ MEDIA_DIR = Path("data/media")
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 
 # ============================================================
-# MEDIA DOWNLOAD — CORRECT TWILIO WAY
+# TWILIO MEDIA DOWNLOAD (RETRY-SAFE)
 # ============================================================
 
-def download_media(media_url: str, dest: Path):
+def download_media(media_url: str, dest: Path) -> bool:
     """
-    Twilio WhatsApp media MUST be downloaded from:
-    MediaUrl0 + '/Content'
+    Returns:
+      True  -> media downloaded successfully
+      False -> media not ready yet (Twilio will retry webhook)
     """
 
     if not media_url:
-        raise RuntimeError("MediaUrl0 missing")
+        return False
 
-    # 🔥 CRITICAL FIX: append /Content
     media_url = media_url.rstrip("/") + "/Content"
-
-    logging.error("📎 USING TWILIO MEDIA CONTENT URL: %s", media_url)
+    logging.error("📎 TRYING TWILIO MEDIA URL: %s", media_url)
 
     r = requests.get(
         media_url,
@@ -65,6 +64,11 @@ def download_media(media_url: str, dest: Path):
         stream=True,
         timeout=30,
     )
+
+    # 🔑 CRITICAL: Twilio media not ready yet
+    if r.status_code == 404:
+        logging.warning("⏳ Media not ready yet — returning 200 so Twilio retries")
+        return False
 
     r.raise_for_status()
 
@@ -74,6 +78,7 @@ def download_media(media_url: str, dest: Path):
                 f.write(chunk)
 
     logging.info("📥 Media saved to %s", dest)
+    return True
 
 # ============================================================
 # ROUTES
@@ -88,11 +93,11 @@ def home():
 def whatsapp_webhook():
     try:
         # ----------------------------------------------------
-        # 1️⃣ HANDLE ONLY MEDIA MESSAGES
+        # 1️⃣ MEDIA URL
         # ----------------------------------------------------
         media_url = request.form.get("MediaUrl0")
         if not media_url:
-            logging.info("Ignoring callback without MediaUrl0")
+            logging.info("Ignoring webhook without MediaUrl0")
             return jsonify({"status": "ignored"}), 200
 
         # ----------------------------------------------------
@@ -100,13 +105,14 @@ def whatsapp_webhook():
         # ----------------------------------------------------
         from_number = request.form.get("From")
         if not from_number:
-            raise RuntimeError("Missing From number")
+            logging.warning("Missing From number")
+            return jsonify({"status": "ignored"}), 200
 
         customer_id = normalize_whatsapp(from_number)
-        logging.info("🧭 Customer identified: %s", customer_id)
+        logging.info("🧭 Customer: %s", customer_id)
 
         sheet_id = get_sheet_for_customer(customer_id)
-        logging.info("📄 Sheet resolved: %s", sheet_id)
+        logging.info("📄 Sheet ID: %s", sheet_id)
 
         # ----------------------------------------------------
         # 3️⃣ FILE PATH
@@ -115,12 +121,16 @@ def whatsapp_webhook():
         img_path = MEDIA_DIR / f"{msg_id}.jpg"
 
         # ----------------------------------------------------
-        # 4️⃣ DOWNLOAD MEDIA (CORRECT URL)
+        # 4️⃣ DOWNLOAD MEDIA (RETRY-SAFE)
         # ----------------------------------------------------
-        download_media(media_url, img_path)
+        ok = download_media(media_url, img_path)
+
+        if not ok:
+            # Media not ready yet — Twilio will retry webhook
+            return jsonify({"status": "media_not_ready"}), 200
 
         # ----------------------------------------------------
-        # 5️⃣ OCR (PURE)
+        # 5️⃣ OCR
         # ----------------------------------------------------
         parsed_data = process_file(img_path)
         logging.error("🚨 AFTER OCR — GOING TO SHEETS 🚨")
@@ -140,3 +150,4 @@ def whatsapp_webhook():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
+
