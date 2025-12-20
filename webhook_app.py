@@ -1,5 +1,5 @@
-print("🔥 FINAL WEBHOOK LOADED — MEDIAURL0 ONLY 🔥")
-print("🚨🚨🚨 WEBHOOK_APP.PY LOADED 🚨🚨🚨", file=sys.stderr)
+import sys
+print("🚨🚨🚨 WEBHOOK_APP.PY IS RUNNING 🚨🚨🚨", file=sys.stderr)
 
 import os
 import time
@@ -42,14 +42,22 @@ MEDIA_DIR = Path("data/media")
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 
 # ============================================================
-# MEDIA DOWNLOAD — ONLY MediaUrl0
+# MEDIA DOWNLOAD — CORRECT TWILIO WAY
 # ============================================================
 
 def download_media(media_url: str, dest: Path):
-    logging.error("📎 USING MediaUrl0 EXACTLY: %s", media_url)
+    """
+    Twilio WhatsApp media MUST be downloaded from:
+    MediaUrl0 + '/Content'
+    """
 
-    if not media_url.startswith("https://"):
-        raise RuntimeError(f"Invalid MediaUrl0: {media_url}")
+    if not media_url:
+        raise RuntimeError("MediaUrl0 missing")
+
+    # 🔥 CRITICAL FIX: append /Content
+    media_url = media_url.rstrip("/") + "/Content"
+
+    logging.error("📎 USING TWILIO MEDIA CONTENT URL: %s", media_url)
 
     r = requests.get(
         media_url,
@@ -80,7 +88,7 @@ def home():
 def whatsapp_webhook():
     try:
         # ----------------------------------------------------
-        # 1️⃣ ONLY HANDLE REAL MEDIA CALLBACK
+        # 1️⃣ HANDLE ONLY MEDIA MESSAGES
         # ----------------------------------------------------
         media_url = request.form.get("MediaUrl0")
         if not media_url:
@@ -107,7 +115,7 @@ def whatsapp_webhook():
         img_path = MEDIA_DIR / f"{msg_id}.jpg"
 
         # ----------------------------------------------------
-        # 4️⃣ DOWNLOAD MEDIA (NO URL BUILDING)
+        # 4️⃣ DOWNLOAD MEDIA (CORRECT URL)
         # ----------------------------------------------------
         download_media(media_url, img_path)
 
