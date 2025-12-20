@@ -1,9 +1,13 @@
 """
+
+print("🚨🚨🚨 WEBHOOK_APP.PY LOADED 🚨🚨🚨", file=sys.stderr)
+
 OCR worker — PURE OCR ONLY
 NO Sheets
 NO Twilio
 NO user routing
 """
+print("🚨🚨🚨 WEBHOOK_APP.PY LOADED 🚨🚨🚨", file=sys.stderr)
 
 import os
 import json
