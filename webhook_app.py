@@ -1,4 +1,5 @@
 print("🔥 FINAL WEBHOOK LOADED — MEDIAURL0 ONLY 🔥")
+print("🚨🚨🚨 WEBHOOK_APP.PY LOADED 🚨🚨🚨", file=sys.stderr)
 
 import os
 import time
