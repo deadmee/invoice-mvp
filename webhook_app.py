@@ -32,29 +32,38 @@ app = Flask(__name__)
 MEDIA_DIR = Path("data/media")
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 
-def download_media(media_url: str, dest: Path) -> bool:
+def download_media(media_url: str, dest: Path, retries=5, delay=2):
     media_url = media_url.rstrip("/") + "/Content"
     logging.info("📎 Trying media: %s", media_url)
 
-    r = requests.get(
-        media_url,
-        auth=(TWILIO_SID, TWILIO_TOKEN),
-        stream=True,
-        timeout=30,
-    )
+    for attempt in range(1, retries + 1):
+        r = requests.get(
+            media_url,
+            auth=(TWILIO_SID, TWILIO_TOKEN),
+            stream=True,
+            timeout=30,
+        )
 
-    if r.status_code == 404:
-        logging.warning("⏳ Media not ready yet — Twilio retry expected")
-        return False
+        if r.status_code == 404:
+            logging.warning(
+                "⏳ Media not ready (attempt %d/%d). Retrying...",
+                attempt,
+                retries,
+            )
+            time.sleep(delay)
+            continue
 
-    r.raise_for_status()
+        r.raise_for_status()
 
-    with open(dest, "wb") as f:
-        for chunk in r.iter_content(16384):
-            if chunk:
-                f.write(chunk)
+        with open(dest, "wb") as f:
+            for chunk in r.iter_content(16384):
+                if chunk:
+                    f.write(chunk)
 
-    return True
+        logging.info("📥 Media downloaded successfully")
+        return True
+
+    raise RuntimeError("Media not available after retries")
 
 @app.route("/", methods=["GET"])
 def home():
