@@ -51,4 +51,9 @@ def process_file(image_path: Path) -> dict:
     parsed_path = PARSED_DIR / f"{image_path.stem}.json"
     parsed_path.write_text(json.dumps(parsed, indent=2), encoding="utf-8")
 
+<<<<<<< HEAD
     return parsed
+=======
+    return parsed
+
+>>>>>>> 01666d9d83e39829311397fe31c66c476a95b9fe
