@@ -11,7 +11,13 @@ from flask import Flask, request, jsonify
 from utils.customers import normalize_whatsapp
 from utils.customer_router import get_sheet_for_customer
 from ocr_worker import process_file
-from sheets import append_invoice_row
+import sys
+import sheets
+
+print("🔥 USING sheets.py FROM:", sheets.__file__, file=sys.stderr)
+
+append_invoice_row = sheets.append_invoice_row
+
 
 logging.basicConfig(
     level=logging.INFO,

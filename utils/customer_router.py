@@ -1,6 +1,6 @@
 from datetime import datetime
 from utils.customers import load_customers, save_customers
-from utils.sheets_manager import create_customer_sheet
+from utils.manager_sheets import create_customer_sheet
 
 def get_sheet_for_customer(customer_id):
     customers = load_customers()
