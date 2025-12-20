@@ -1,3 +1,6 @@
+import sys
+print("🚨 WEBHOOK_APP.PY LOADED 🚨", file=sys.stderr)
+
 import os
 import time
 import logging
@@ -5,66 +8,37 @@ import requests
 from pathlib import Path
 from flask import Flask, request, jsonify
 
-# ============================================================
-# LOGGING (SAFE AT IMPORT TIME)
-# ============================================================
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s"
-)
+from ocr_worker import process_file
+from sheets import append_invoice_row
 
-# ============================================================
-# FLASK APP (MUST BE FIRST, NO ENV CHECKS HERE)
-# ============================================================
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+# ================= ENV =================
+
+TWILIO_SID = os.getenv("TWILIO_ACCOUNT_SID")
+TWILIO_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
+DEFAULT_SHEET_ID = os.getenv("DEFAULT_SHEET_ID")
+
+if not TWILIO_SID or not TWILIO_TOKEN:
+    raise RuntimeError("Twilio credentials missing")
+
+if not DEFAULT_SHEET_ID:
+    raise RuntimeError("DEFAULT_SHEET_ID missing")
+
+# ================= APP =================
+
 app = Flask(__name__)
 
-# ============================================================
-# PATHS
-# ============================================================
 MEDIA_DIR = Path("data/media")
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 
-# ============================================================
-# ROUTES
-# ============================================================
+# ================= TWILIO MEDIA =================
 
-@app.route("/", methods=["GET"])
-def home():
-    return "OK", 200
+def download_media(media_url: str, dest: Path, retries=6, delay=2):
+    media_url = media_url.rstrip("/") + "/Content"
+    logging.info("📎 Fetching media: %s", media_url)
 
-
-@app.route("/webhook/whatsapp", methods=["POST"])
-def whatsapp_webhook():
-    try:
-        # ----------------------------------------------------
-        # ENV (READ INSIDE FUNCTION — SAFE)
-        # ----------------------------------------------------
-        TWILIO_SID = os.getenv("TWILIO_ACCOUNT_SID")
-        TWILIO_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
-        DEFAULT_SHEET_ID = os.getenv("DEFAULT_SHEET_ID")
-
-        if not TWILIO_SID or not TWILIO_TOKEN:
-            return jsonify({"error": "Twilio env vars missing"}), 500
-
-        if not DEFAULT_SHEET_ID:
-            return jsonify({"error": "DEFAULT_SHEET_ID missing"}), 500
-
-        # ----------------------------------------------------
-        # MEDIA
-        # ----------------------------------------------------
-        media_url = request.form.get("MediaUrl0")
-        if not media_url:
-            logging.info("No media — ignored")
-            return jsonify({"status": "ignored"}), 200
-
-        from_number = request.form.get("From", "unknown")
-        msg_id = request.form.get("MessageSid", str(int(time.time())))
-        img_path = MEDIA_DIR / f"{msg_id}.jpg"
-
-        # Twilio media needs /Content
-        media_url = media_url.rstrip("/") + "/Content"
-        logging.info("Downloading media: %s", media_url)
-
+    for attempt in range(1, retries + 1):
         r = requests.get(
             media_url,
             auth=(TWILIO_SID, TWILIO_TOKEN),
@@ -73,43 +47,48 @@ def whatsapp_webhook():
         )
 
         if r.status_code == 404:
-            logging.warning("Media not ready yet")
-            return jsonify({"status": "retry"}), 200
+            logging.warning("⏳ Media not ready (%d/%d)", attempt, retries)
+            time.sleep(delay)
+            continue
 
         r.raise_for_status()
 
-        with open(img_path, "wb") as f:
+        with open(dest, "wb") as f:
             for chunk in r.iter_content(16384):
                 if chunk:
                     f.write(chunk)
 
-        logging.info("Media saved: %s", img_path)
+        logging.info("📥 Media downloaded")
+        return True
 
-        # ----------------------------------------------------
-        # OCR
-        # ----------------------------------------------------
-        from ocr_worker import process_file
-        parsed = process_file(img_path)
+    logging.warning("❌ Media never became available")
+    return False
 
-        logging.info("OCR done, moving to Sheets")
+# ================= ROUTES =================
 
-        # ----------------------------------------------------
-        # GOOGLE SHEETS (FORCED)
-        # ----------------------------------------------------
-        from sheets import append_invoice_row
-        append_invoice_row(parsed, DEFAULT_SHEET_ID)
-
-        logging.info("Sheets append SUCCESS")
-
-        return jsonify({"status": "ok"}), 200
-
-    except Exception as e:
-        logging.exception("WEBHOOK FAILED")
-        return jsonify({"error": str(e)}), 500
+@app.route("/", methods=["GET"])
+def home():
+    return "OK", 200
 
 
-# ============================================================
-# LOCAL RUN (IGNORED BY RENDER)
-# ============================================================
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+@app.route("/webhook/whatsapp", methods=["POST"])
+def whatsapp_webhook():
+    media_url = request.form.get("MediaUrl0")
+    if not media_url:
+        return jsonify({"status": "ignored"}), 200
+
+    msg_id = request.form.get("MessageSid", str(int(time.time())))
+    img_path = MEDIA_DIR / f"{msg_id}.jpg"
+
+    ok = download_media(media_url, img_path)
+    if not ok:
+        # IMPORTANT: return 200 so Twilio retries
+        return jsonify({"status": "waiting"}), 200
+
+    parsed = process_file(img_path)
+
+    logging.error("🚨 AFTER OCR — APPENDING TO SHEETS 🚨")
+    append_invoice_row(parsed, DEFAULT_SHEET_ID)
+    logging.error("✅ GOOGLE SHEETS APPEND DONE")
+
+    return jsonify({"status": "ok"}), 200
